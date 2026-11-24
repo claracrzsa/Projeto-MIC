@@ -12,13 +12,15 @@
 //
 // O codigo de cada modulo foi mantido o mais proximo possivel do original.
 // Os trechos alterados para a integracao estao marcados com "[INTEGRACAO]".
+// Os ajustes posteriores (tempo no LCD, teclado 4x3, debounce e reinicio
+// pelo "*") estao marcados com "[ALTERACAO ...]".
 // O mapa de pinos e as mudancas estao explicados no README.md.
 //
 // MAPA DE PINOS
-//   D0/D1  UART (comando 'R' reinicia o jogo)
+//   D0/D1  UART (comando 'R' reinicia o jogo; segurar '*' tambem reinicia)
 //   D2     BOTAO1 da sequencia (nao mudou), interrupcao externa INT0
-//   D3-D5  linhas do teclado (terminais 2, 3 e 4)
-//   D6-D9  colunas do teclado (terminais 5 a 8, pull-up externo de 10k)
+//   D3-D6  linhas do teclado 4x3 (1-2-3, 4-5-6, 7-8-9, *-0-#)
+//   D7-D9  colunas do teclado 4x3 (pull-up externo de 10k)
 //   D10    BOTAO2 da sequencia (era D3), interrupcao PCINT2
 //   D11    fio superior amarelo
 //   D12    fio superior verde    + LED2 da sequencia / LED do cofre 2
@@ -248,42 +250,48 @@ uint32_t fimBip = 0;
 byte bipLigado = 0;
 
 // ========================================
-// TECLADO 4X4
+// TECLADO 4X3 (4 LINHAS E 3 COLUNAS)
 // ========================================
 
-// Terminais do teclado:
-// 1 -> desligado  [INTEGRACAO] era D2 (linha das letras A-D, nao usada)
-// 2 -> D3
-// 3 -> D4
-// 4 -> D5
-// 5 -> D6
-// 6 -> D7
-// 7 -> D8
-// 8 -> D9
+// [ALTERACAO 4x3] o teclado 4x4 foi trocado por um 4x3.
+// Terminais do teclado (confira a ordem no datasheet do seu modelo):
+// Linha 1 (1 2 3) -> D3
+// Linha 2 (4 5 6) -> D4
+// Linha 3 (7 8 9) -> D5
+// Linha 4 (* 0 #) -> D6
+// Coluna 1        -> D7
+// Coluna 2        -> D8
+// Coluna 3        -> D9
 //
 // Resistores de 10k entre:
-// D6 e 5V
 // D7 e 5V
 // D8 e 5V
 // D9 e 5V
 
-const char teclas[4][4] = {
-  {'D', 'C', 'B', 'A'},
-  {'#', '9', '6', '3'},
-  {'0', '8', '5', '2'},
-  {'*', '7', '4', '1'}
+const char teclas[4][3] = {
+  {'1', '2', '3'},
+  {'4', '5', '6'},
+  {'7', '8', '9'},
+  {'*', '0', '#'}
 };
 
-// [INTEGRACAO] mascara das linhas: D3 a D5 (D2 ficou para o BOTAO1)
-#define LINHAS_TECLADO 0b00111000
+// Mascara das linhas: D3 a D6 (D2 ficou para o BOTAO1)
+#define LINHAS_TECLADO 0b01111000
+
+// [ALTERACAO DEBOUNCE] debounce por tempo, independente da velocidade do loop
+#define INTERVALO_VARREDURA_MS 5    // uma varredura a cada 5 ms
+#define DEBOUNCE_TECLADO_MS    30   // leitura igual por 30 ms para valer
+
+char teclaPressionada = '\0';       // tecla estavel no momento ('\0' = nenhuma)
+uint32_t inicioTeclaPressionada = 0; // quando ela foi aceita (para tecla segurada)
 
 void iniciarTeclado() {
 
-  // D3 a D5: saidas
+  // D3 a D6: saidas
   DDRD |= LINHAS_TECLADO;
 
-  // D6 e D7: entradas
-  DDRD &= ~0b11000000;
+  // D7: entrada
+  DDRD &= ~0b10000000;
 
   // D8 e D9: entradas
   DDRB &= ~0b00000011;
@@ -293,7 +301,7 @@ void iniciarTeclado() {
 
   // Pull-ups internos desativados
   // Usaremos os resistores externos
-  PORTD &= ~0b11000000;
+  PORTD &= ~0b10000000;
   PORTB &= ~0b00000011;
 }
 
@@ -302,81 +310,99 @@ bool colunaPressionada(byte coluna) {
   switch (coluna) {
 
     case 0:
-      return !(PIND & (1 << PD6));
-
-    case 1:
       return !(PIND & (1 << PD7));
 
-    case 2:
+    case 1:
       return !(PINB & (1 << PB0));
 
-    case 3:
+    case 2:
       return !(PINB & (1 << PB1));
   }
 
   return false;
 }
 
+// [ALTERACAO DEBOUNCE] varre as 4 linhas e devolve a tecla apertada.
+// Duas ou mais teclas ao mesmo tempo contam como nenhuma, para evitar
+// leituras fantasmas.
 char lerTecladoBruto() {
 
-  // [INTEGRACAO] comeca na linha 1 (a linha 0 estava no D2)
-  for (byte linha = 1; linha < 4; linha++) {
+  char encontrada = '\0';
+  byte quantidade = 0;
+
+  for (byte linha = 0; linha < 4; linha++) {
 
     // Todas as linhas em HIGH
     PORTD |= LINHAS_TECLADO;
 
     // Somente uma linha em LOW
-    PORTD &= ~(1 << (linha + 2));
+    PORTD &= ~(1 << (linha + 3));
 
     _delay_us(100);
 
-    for (byte coluna = 0; coluna < 4; coluna++) {
+    for (byte coluna = 0; coluna < 3; coluna++) {
 
       if (colunaPressionada(coluna)) {
 
-        PORTD |= LINHAS_TECLADO;
-
-        return teclas[linha][coluna];
+        encontrada = teclas[linha][coluna];
+        quantidade++;
       }
     }
   }
 
   PORTD |= LINHAS_TECLADO;
 
-  return '\0';
+  if (quantidade != 1) {
+    return '\0';
+  }
+
+  return encontrada;
 }
 
-// Uma leitura por pressionamento
+// Uma leitura por pressionamento.
+// [ALTERACAO DEBOUNCE] a tecla so e aceita depois de ficar igual por
+// DEBOUNCE_TECLADO_MS, e o mesmo vale para soltar. Antes eram 4 leituras
+// seguidas, cujo tempo dependia da velocidade do loop.
 char lerTeclado() {
 
   static char ultimaLeitura = '\0';
-  static char teclaEstavel = '\0';
-  static byte contador = 0;
+  static uint32_t inicioLeitura = 0;
+  static uint32_t ultimaVarredura = 0;
+
+  uint32_t agora = ler_tempo_ms();
+
+  if (agora - ultimaVarredura < INTERVALO_VARREDURA_MS) {
+    return '\0';
+  }
+
+  ultimaVarredura = agora;
 
   char atual = lerTecladoBruto();
 
-  if (atual == ultimaLeitura) {
-
-    if (contador < 4) {
-      contador++;
-    }
-
-  } else {
+  // Leitura mudou: recomeca a contagem do debounce
+  if (atual != ultimaLeitura) {
 
     ultimaLeitura = atual;
-    contador = 0;
+    inicioLeitura = agora;
+
+    return '\0';
   }
 
-  if (contador >= 4 && atual != teclaEstavel) {
-
-    teclaEstavel = atual;
-
-    if (teclaEstavel != '\0') {
-      return teclaEstavel;
-    }
+  // Ainda nao ficou estavel por tempo suficiente
+  if (agora - inicioLeitura < DEBOUNCE_TECLADO_MS) {
+    return '\0';
   }
 
-  return '\0';
+  // Estavel, mas nada mudou em relacao a tecla aceita
+  if (atual == teclaPressionada) {
+    return '\0';
+  }
+
+  teclaPressionada = atual;
+  inicioTeclaPressionada = agora;
+
+  // Devolve a tecla ao apertar; ao soltar devolve '\0'
+  return teclaPressionada;
 }
 
 // ========================================
@@ -499,10 +525,11 @@ void telaJogo() {
 
   linhaLCD(1);
 
+  // [ALTERACAO LCD] ate 11 caracteres: as colunas 12-15 sao do tempo
   if (dificuldade == 1) {
     textoLCD("MODO: FACIL");
   } else {
-    textoLCD("MODO: DIFICIL");
+    textoLCD("MODO: DIFIC");
   }
 }
 
@@ -537,10 +564,11 @@ void telaVitoria() {
   textoLCD("BOMBA DESARMADA");
 
   linhaLCD(1);
-  textoLCD("# PARA REINICIAR");
+  textoLCD("SEGURE * REINIC.");   // [ALTERACAO] era "# PARA REINICIAR"
 }
 
 // Cabecalho de cada desafio: "1/4 NOME" e uma dica na linha de baixo
+// [ALTERACAO LCD] a dica tem ate 11 caracteres: as colunas 12-15 sao do tempo
 void telaDesafio(const char* nome, const char* dica) {
 
   limparLCD();
@@ -552,6 +580,28 @@ void telaDesafio(const char* nome, const char* dica) {
 
   linhaLCD(1);
   textoLCD(dica);
+}
+
+// ========================================
+// [ALTERACAO LCD] TEMPO RESTANTE NO LCD
+// ========================================
+
+// Durante o jogo o tempo fica no canto direito da linha de baixo
+// (colunas 12 a 15, formato M:SS). Todas as telas do jogo deixam a
+// coluna 11 em branco e escrevem no maximo 11 caracteres nessa linha.
+#define COLUNA_TEMPO_LCD 12
+
+// Pede para redesenhar o tempo no LCD (depois de uma tela nova)
+byte tempoLCDPendente = 0;
+
+void mostrarTempoLCD(unsigned int tempo) {
+
+  comandoLCD(0xC0 + COLUNA_TEMPO_LCD);
+
+  enviarLCD('0' + (tempo / 60), 1);
+  enviarLCD(':', 1);
+  enviarLCD('0' + ((tempo % 60) / 10), 1);
+  enviarLCD('0' + (tempo % 10), 1);
 }
 
 // ========================================
@@ -754,6 +804,13 @@ byte servicoBomba() {
     }
   }
 
+  // [ALTERACAO LCD] o tempo tambem aparece no LCD
+  if (precisaAtualizar || tempoLCDPendente) {
+
+    mostrarTempoLCD(tempoAtual);
+    tempoLCDPendente = 0;
+  }
+
   atualizarBip();
 
   return (tempoAtual > 0 && erros < MAX_ERROS_JOGO);
@@ -767,7 +824,7 @@ byte servicoBomba() {
 //   do TWI por registradores, para nao misturar dois drivers no mesmo barramento.
 // - O LCD ja e inicializado pela bomba (lcd_init removido).
 // - O teclado proprio (D2-D5 / D8-D10) foi removido: o binario usa o teclado
-//   4x4 da bomba, cuja tecla e lida no loop principal (teclaJogo).
+//   da bomba (agora 4x3), cuja tecla e lida no loop principal (teclaJogo).
 // - Os erros agora sao os erros do jogo (registrarErro), nao locais.
 
 #define PCF_ENDERECO      LCD_ADDR   // PCF8574 com A0, A1 e A2 no GND
@@ -872,7 +929,9 @@ void display_mostra_enunciado(const char *texto) {
 }
 
 // mostra na linha 2 o valor decimal digitado até agora (ex.: "Dec:47")
-// completa o campo com espaços e apaga a mensagem "Errou!" da linha 1
+// completa o campo com espaços, o que tambem apaga a mensagem "Errou!"
+// [ALTERACAO LCD] o "Errou!" agora fica na linha 2, no lugar do "Dec:",
+// e a linha 1 nao e mais limpa aqui (guarda os erros)
 void display_mostra_digitado(uint16_t valor, uint8_t qtd_digitos) {
   uint8_t n = 0;
   if (qtd_digitos > 0) n = (valor < 10) ? 1 : (valor < 100) ? 2 : 3;
@@ -880,19 +939,19 @@ void display_mostra_digitado(uint16_t valor, uint8_t qtd_digitos) {
   lcd_texto("Dec:");
   if (qtd_digitos > 0) lcd_numero(valor);
   for (uint8_t i = 4 + n; i < 7; i++) lcd_caractere(' ');
-  lcd_posicao(9, 0);
-  for (uint8_t i = 9; i < 16; i++) lcd_caractere(' ');
 }
 
-// mostra a quantidade de erros no canto direito da linha 2 (ex.: "Erros:1")
+// mostra a quantidade de erros no canto direito da linha 1 (ex.: "Erros:1")
 // [INTEGRACAO] mostra os erros do jogo inteiro
+// [ALTERACAO LCD] saiu da linha 2 (colunas 7-13) para a linha 1 (colunas
+// 9-15), porque o tempo ocupa o fim da linha 2
 static void mostra_erros(void) {
-  lcd_posicao(7, 1);
+  lcd_posicao(9, 0);
   lcd_texto("Erros:");
   lcd_numero(erros);
 }
 
-// [INTEGRACAO] a tecla vem do teclado 4x4 da bomba (lida uma vez por loop)
+// [INTEGRACAO] a tecla vem do teclado da bomba (lida uma vez por loop)
 static char teclado_tecla(void) {
   return teclaJogo;
 }
@@ -985,10 +1044,10 @@ byte binario_executar() {
   if (r == FASE_ACERTOU) {
     estado_desafio = DESAFIO_CONCLUIDO;
     lcd_linha(0, "Parabens, passou");
-    lcd_linha(1, "p/ proxima fase");
+    lcd_linha(1, "de fase!");   // [ALTERACAO LCD] era "p/ proxima fase"
     return 1;
   } else if (r == FASE_ERROU) {
-    lcd_posicao(9, 0);
+    lcd_posicao(0, 1);          // [ALTERACAO LCD] era a coluna 9 da linha 1
     lcd_texto("Errou!");
   }
   return 0;
@@ -1857,22 +1916,24 @@ void iniciarDesafioAtual() {
 
     case DESAFIO_COFRE:
       uart_enviar_linha("COFRE");
-      telaDesafio("COFRE", "GIRE OS 2 POTS");
+      telaDesafio("COFRE", "GIRE 2 POTS");        // [ALTERACAO LCD] era "GIRE OS 2 POTS"
       cofre_iniciar();
       break;
 
     case DESAFIO_SEQUENCIA:
       uart_enviar_linha("SEQUENCIA");
-      telaDesafio("SEQUENCIA", "REPITA OS LEDS");
+      telaDesafio("SEQUENCIA", "REPITA LEDS");   // [ALTERACAO LCD] era "REPITA OS LEDS"
       sequencia_iniciar();
       break;
 
     case DESAFIO_FIOS:
       uart_enviar_linha("FIOS");
-      telaDesafio("FIOS", "LIGUE AS CORES");
+      telaDesafio("FIOS", "LIGUE CORES");         // [ALTERACAO LCD] era "LIGUE AS CORES"
       fios_iniciar();
       break;
   }
+
+  tempoLCDPendente = 1;   // [ALTERACAO LCD] tela nova: redesenha o tempo
 }
 
 // Devolve 1 quando o desafio atual foi concluido
@@ -1922,6 +1983,7 @@ void iniciarJogo(byte modo) {
   mostrarTempo(3, 0);
 
   telaJogo();
+  tempoLCDPendente = 1;   // [ALTERACAO LCD]
 
   // [INTEGRACAO] prepara os desafios
   erros = 0;
@@ -1987,7 +2049,33 @@ void encerrarJogo(byte venceu) {
   }
 }
 
-// Volta para a escolha da dificuldade (explosao, vitoria ou comando 'R')
+// [ALTERACAO REINICIO] devolve 1 uma unica vez quando '*' fica apertado por
+// TEMPO_REINICIO_MS. Um toque curto continua apagando os digitos no binario.
+// Depois de reiniciar, so vale de novo quando o '*' for solto.
+#define TEMPO_REINICIO_MS 1000UL
+
+byte asteriscoSegurado() {
+
+  static byte aguardandoSoltar = 0;
+
+  if (teclaPressionada != '*') {
+    aguardandoSoltar = 0;
+    return 0;
+  }
+
+  if (aguardandoSoltar) {
+    return 0;
+  }
+
+  if (ler_tempo_ms() - inicioTeclaPressionada >= TEMPO_REINICIO_MS) {
+    aguardandoSoltar = 1;
+    return 1;
+  }
+
+  return 0;
+}
+
+// Volta para a escolha da dificuldade (explosao, '*' segurado ou comando 'R')
 void reiniciarJogo() {
 
   cli();
@@ -2047,7 +2135,8 @@ void setup() {
   uart_enviar_linha("ESCAPE ROOM PRONTO");
   uart_enviar_linha("1 = FACIL");
   uart_enviar_linha("2 = DIFICIL");
-  uart_enviar_linha("R = REINICIAR");
+  uart_enviar_linha("SEGURE * = REINICIAR");
+  uart_enviar_linha("R = REINICIAR (SERIAL)");
 }
 
 // ========================================
@@ -2066,13 +2155,18 @@ void loop() {
 
   char tecla = lerTeclado();
 
+  // [ALTERACAO REINICIO] segurar '*' reinicia o jogo em qualquer momento
+  if (asteriscoSegurado()) {
+    uart_enviar_linha("REINICIO PELO TECLADO");
+    reiniciarJogo();
+    return;
+  }
+
   // [INTEGRACAO] fim de jogo: explosao recomeca sozinha,
-  // vitoria espera '#' (ou 'R' pela serial)
+  // vitoria espera '*' segurado (ou 'R' pela serial)
   if (jogoEncerrado) {
 
     if (!vitoria && ler_tempo_ms() - momentoFim >= TEMPO_EXPLOSAO_MS) {
-      reiniciarJogo();
-    } else if (vitoria && tecla == '#') {
       reiniciarJogo();
     }
 
@@ -2128,8 +2222,10 @@ void loop() {
 
     if (d == DESAFIO_COFRE || d == DESAFIO_SEQUENCIA) {
       linhaLCD(1);
-      textoLCD("CONCLUIDO!      ");
+      textoLCD("CONCLUIDO! ");   // [ALTERACAO LCD] 11 caracteres, o resto e do tempo
     }
+
+    tempoLCDPendente = 1;   // [ALTERACAO LCD] a mensagem pode ter apagado o tempo
 
     indiceDesafio++;
     desafioIniciado = 0;

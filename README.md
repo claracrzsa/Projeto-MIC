@@ -23,9 +23,11 @@ Observação: o `bomba.ino` do repositório está com um conflito de merge salvo
 ## Como jogar
 
 1. Ao ligar, o LCD mostra `ESCOLHA O MODO`. Aperte `1` (fácil) ou `2` (difícil) no teclado.
-2. O cronômetro começa em 3:00 no display de 7 segmentos.
+2. O cronômetro começa em 3:00. Ele aparece no display de 7 segmentos e também no canto direito da linha de baixo do LCD.
 3. Os 4 desafios aparecem um de cada vez, em ordem sorteada a cada partida. O LCD mostra qual é o desafio (`1/4 COFRE`, por exemplo).
-4. Concluir os 4 desafios desarma a bomba (`BOMBA DESARMADA`). Aperte `#` para jogar de novo.
+4. Concluir os 4 desafios desarma a bomba (`BOMBA DESARMADA`).
+
+Para reiniciar o jogo a qualquer momento, segure a tecla `*` por 1 segundo, ou envie `R` pela serial. Um toque curto no `*` não reinicia: no desafio binário ele continua apagando os dígitos digitados.
 
 Regras de erro:
 
@@ -51,9 +53,32 @@ Nos últimos 30 s o buzzer apita a cada segundo.
 
 | Comando | Efeito |
 |---|---|
-| `R` ou `r` | Reinicia o jogo a qualquer momento |
+| `R` ou `r` | Reinicia o jogo a qualquer momento (o enunciado exige reinício por comando serial) |
 
 O jogo também envia mensagens de acompanhamento (início, desafio atual, erros, leituras do cofre, fim de jogo).
+
+### O que aparece no LCD
+
+Durante o jogo, as colunas 12 a 15 da linha de baixo mostram o tempo restante (`M:SS`), e a coluna 11 fica em branco. As outras telas foram ajustadas para caber nas 11 primeiras colunas da linha de baixo:
+
+```
+DESAFIOS ATIVOS        1/4 COFRE              Hex:0x2F Erros:1
+MODO: FACIL 3:00       GIRE 2 POTS 2:41       Dec:47      2:13
+```
+
+| Tela | Antes | Agora |
+|---|---|---|
+| Início do jogo, modo difícil | `MODO: DIFICIL` | `MODO: DIFIC` (mesma abreviação de `2:DIFIC`) |
+| Dica do cofre | `GIRE OS 2 POTS` | `GIRE 2 POTS` |
+| Dica da sequência | `REPITA OS LEDS` | `REPITA LEDS` |
+| Dica dos fios | `LIGUE AS CORES` | `LIGUE CORES` |
+| Desafio concluído (cofre, sequência) | `CONCLUIDO!` com espaços até o fim da linha | `CONCLUIDO!` sem apagar o tempo |
+| Binário, contagem de erros | Linha de baixo, colunas 7 a 13 | Linha de cima, colunas 9 a 15 (`Hex:0x2F Erros:1`) |
+| Binário, aviso de erro | `Errou!` na linha de cima | `Errou!` na linha de baixo, no lugar do `Dec:`, até a próxima tecla |
+| Binário, acerto | `Parabens, passou` / `p/ proxima fase` | `Parabens, passou` / `de fase!` |
+| Vitória | `# PARA REINICIAR` | `SEGURE * REINIC.` |
+
+As telas de escolha de modo, explosão e tempo esgotado não mostram o tempo, porque o cronômetro está parado nelas.
 
 ## Pinagem
 
@@ -63,8 +88,8 @@ Os 4 desafios e a bomba, cada um com seus pinos originais, precisariam de mais p
 |---|---|
 | D0 / D1 | UART (RX / TX) |
 | D2 | Botão 1 da sequência (interrupção externa INT0) |
-| D3, D4, D5 | Linhas do teclado (terminais 2, 3 e 4) |
-| D6, D7, D8, D9 | Colunas do teclado (terminais 5 a 8, resistor de 10k para 5V em cada) |
+| D3, D4, D5, D6 | Linhas do teclado 4x3 (`1 2 3`, `4 5 6`, `7 8 9`, `* 0 #`) |
+| D7, D8, D9 | Colunas do teclado 4x3 (resistor de 10k para 5V em cada) |
 | D10 | Botão 2 da sequência (interrupção de mudança de pino PCINT2) |
 | D11 | Fio superior amarelo |
 | D12 | Fio superior verde, LED 2 da sequência e LED do cofre 2 |
@@ -79,8 +104,8 @@ Os 4 desafios e a bomba, cada um com seus pinos originais, precisariam de mais p
 
 | Componente | Antes | Agora | Motivo |
 |---|---|---|---|
-| Teclado, terminal 1 (linha das letras A, B, C, D) | D2 | Desligado | Liberar D2. As letras não eram usadas |
-| Teclado próprio do binário (4x3) | D2 a D5 e D8 a D10 | Removido | O binário usa o teclado 4x4 da bomba |
+| Teclado 4x4 da bomba | Linhas D2 a D5, colunas D6 a D9 | Trocado por um teclado 4x3: linhas D3 a D6, colunas D7 a D9 | D2 ficou para o botão 1. As letras A a D não eram usadas |
+| Teclado próprio do binário (4x3) | D2 a D5 e D8 a D10 | Removido | O binário usa o teclado da bomba |
 | LED 1 da sequência | D6 | D13 | D6 é coluna do teclado |
 | LED 2 da sequência | D4 | D12 | D4 é linha do teclado |
 | Botão 2 da sequência | D3 | D10 | D3 é linha do teclado |
@@ -89,9 +114,17 @@ Os 4 desafios e a bomba, cada um com seus pinos originais, precisariam de mais p
 | Leitura dos fios inferiores | A1 | A2 | A1 é o potenciômetro do cofre 2 |
 | Buzzer | D11 | A3 | D11 é o fio amarelo |
 
-Sem mudança: botão 1 da sequência (D2), colunas e linhas D3 a D9 do teclado, fios superiores (D11 a D13), potenciômetros do cofre (A0 e A1), LCD e display (I2C).
+Sem mudança: botão 1 da sequência (D2), fios superiores (D11 a D13), potenciômetros do cofre (A0 e A1), LCD e display (I2C).
 
 Os LEDs da sequência e do cofre usam os mesmos pinos dos fios vermelho (D13) e verde (D12). Se o circuito dos fios já tem LEDs nesses pinos, eles servem para os 3 desafios. Se não tem, ligue um LED com resistor (220 a 330 ohms) do pino ao GND.
+
+### Teclado 4x3
+
+O código supõe a ordem linha 1 (`1 2 3`) em D3, linha 2 (`4 5 6`) em D4, linha 3 (`7 8 9`) em D5, linha 4 (`* 0 #`) em D6, coluna 1 em D7, coluna 2 em D8 e coluna 3 em D9. A ordem dos terminais muda de um fabricante para outro, então confira no datasheet ou com um multímetro (no modo de continuidade, apertando uma tecla) antes de ligar. Se a ordem do seu teclado for outra, basta mudar os fios ou a matriz `teclas`.
+
+As colunas usam resistor de pull-up externo de 10k para 5V (3 resistores; o teclado 4x4 usava 4). O resistor que ficava no D6 sai, porque o D6 agora é uma linha.
+
+Debounce: o teclado é varrido a cada 5 ms e uma tecla só vale depois de ficar igual por 30 ms, tanto ao apertar quanto ao soltar. Antes eram 4 leituras seguidas, e esse tempo dependia da velocidade do loop. Duas teclas apertadas ao mesmo tempo são ignoradas. Os tempos ficam em `INTERVALO_VARREDURA_MS` e `DEBOUNCE_TECLADO_MS`.
 
 Os botões continuam com resistor pull-down externo (botão ligado ao 5V). Para usar pull-up interno com o botão ligado ao GND, mude `PULLDOWN_EXTERNO` para 0.
 
@@ -143,12 +176,15 @@ Nomes que não aparecem nas tabelas abaixo continuam iguais aos originais.
 | `Serial.println(tecla)` | `uart_enviar_char(tecla)` seguido de `uart_enviar_texto("\r\n")` |
 | `delay(x)` | `_delay_ms(x)` |
 | `delayMicroseconds(x)` | `_delay_us(x)` |
-| Máscara `0b00111100` das linhas do teclado | `LINHAS_TECLADO` (`0b00111000`, sem o D2) |
+| Máscara `0b00111100` das linhas do teclado | `LINHAS_TECLADO` (`0b01111000`: linhas D3 a D6 do teclado 4x3) |
+| `teclas[4][4]` (teclado 4x4) | `teclas[4][3]` (teclado 4x3) |
+| `lerTeclado()` com contador de 4 leituras | `lerTeclado()` com debounce por tempo |
+| `#` na tela de vitória para jogar de novo | Segurar `*` por 1 s em qualquer momento (`asteriscoSegurado()`) |
 | `180` (tempo inicial em `iniciarJogo`) | `TEMPO_TOTAL_S` |
 | Trecho do `loop()` que lia o cronômetro e atualizava o display | `servicoBomba()` |
 | Fim de jogo dentro do `loop()` (`jogoEncerrado = 1`) | `encerrarJogo(venceu)` e `reiniciarJogo()` |
 
-Novos nomes na bomba: `registrarErro()`, `bip()`, `atualizarBip()`, `telaExplosao()`, `telaVitoria()`, `telaDesafio()`, `sortearOrdem()`, `iniciarDesafioAtual()`, `executarDesafioAtual()`, as variáveis `erros`, `ordemDesafios`, `indiceDesafio`, `desafioIniciado`, `vitoria`, `esperarAte`, `momentoFim`, `teclaJogo`, `contadorSegundo` e as constantes `PENALIDADE_FACIL_S`, `PENALIDADE_DIFICIL_S`, `MAX_ERROS_JOGO`, `TEMPO_AVISO_S`, `PAUSA_DESAFIOS_MS`, `TEMPO_EXPLOSAO_MS`, `NUM_DESAFIOS`, `DESAFIO_BINARIO`, `DESAFIO_COFRE`, `DESAFIO_SEQUENCIA` e `DESAFIO_FIOS`.
+Novos nomes na bomba: `mostrarTempoLCD()`, `tempoLCDPendente`, `COLUNA_TEMPO_LCD`, `teclaPressionada`, `inicioTeclaPressionada`, `INTERVALO_VARREDURA_MS`, `DEBOUNCE_TECLADO_MS`, `asteriscoSegurado()`, `TEMPO_REINICIO_MS`, `registrarErro()`, `bip()`, `atualizarBip()`, `telaExplosao()`, `telaVitoria()`, `telaDesafio()`, `sortearOrdem()`, `iniciarDesafioAtual()`, `executarDesafioAtual()`, as variáveis `erros`, `ordemDesafios`, `indiceDesafio`, `desafioIniciado`, `vitoria`, `esperarAte`, `momentoFim`, `teclaJogo`, `contadorSegundo` e as constantes `PENALIDADE_FACIL_S`, `PENALIDADE_DIFICIL_S`, `MAX_ERROS_JOGO`, `TEMPO_AVISO_S`, `PAUSA_DESAFIOS_MS`, `TEMPO_EXPLOSAO_MS`, `NUM_DESAFIOS`, `DESAFIO_BINARIO`, `DESAFIO_COFRE`, `DESAFIO_SEQUENCIA` e `DESAFIO_FIOS`.
 
 ### binario_decimal1 (2).ino
 
