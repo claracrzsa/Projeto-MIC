@@ -87,9 +87,8 @@ void desligar_leds();
 uint8_t gerar_numero_aleatorio();
 void seq_aguardar_inicio();
 
-// ========================================================================
 // MODULO COMPARTILHADO: BASE DE TEMPO, UART E BUZZER
-// ========================================================================
+
 // COMO FUNCIONA
 //   Recursos usados por todos os modulos:
 //   - "ms": relogio de 1 ms incrementado pela ISR do Timer1. E lido com
@@ -101,9 +100,9 @@ void seq_aguardar_inicio();
 //   - Buzzer: o Timer2 em modo CTC gera a frequencia, e a ISR inverte o
 //     pino A3 a cada comparacao. O buzzer precisa ser passivo.
 
-// ----------------------------------------
+
 // BASE DE TEMPO DE 1 ms (Timer1)
-// ----------------------------------------
+
 // [INTEGRACAO] todos os modulos usavam o Timer1 com uma ISR propria
 // (1 s na bomba, 1 ms nos fios/cofre/sequencia, 10 ms no hexadecimal).
 // Agora existe uma unica ISR de 1 ms (ver modulo BOMBA), e este contador
@@ -121,9 +120,9 @@ uint32_t ler_tempo_ms() {
   return tempo;
 }
 
-// ----------------------------------------
+
 // UART POR REGISTRADORES (desafio_sequencia.ino)
-// ----------------------------------------
+
 // [INTEGRACAO] substitui o Serial da bomba e dos fios e a UART do cofre.
 
 #define BAUD 9600UL
@@ -205,9 +204,8 @@ void uart_enviar_linha_numero(const char *rotulo, uint8_t valor) {
   uart_enviar_texto("\r\n");
 }
 
-// ----------------------------------------
 // BUZZER (buzzer.ino)
-// ----------------------------------------
+
 // [INTEGRACAO] o original usava a saida OC2A (D11), que agora e o fio
 // amarelo. O Timer2 continua gerando a frequencia em modo CTC, mas o pino
 // do buzzer (A3) e invertido pela ISR do Timer2.
@@ -238,22 +236,16 @@ ISR(TIMER2_COMPA_vect) {
   cpl_bit(BUZZER_PORT, BUZZER_BIT);
 }
 
-// ========================================================================
 // MODULO BOMBA (bomba.ino) - FLUXO DO JOGO
-// ========================================================================
 
-// ========================================
 // ENDERECOS I2C
-// ========================================
 
 // [OLED] o LCD 16x2 com PCF8574 (0x20) foi trocado por um OLED 0,96" I2C.
 // A maioria desses modulos responde em 0x3C (alguns em 0x3D).
 #define OLED_ADDR 0x3C
 #define DISPLAY_ADDR 0x70
 
-// ========================================
 // VARIAVEIS DO JOGO
-// ========================================
 
 volatile unsigned int tempoRestante = 180;
 volatile byte atualizarTempo = 0;
@@ -303,9 +295,9 @@ volatile uint16_t contadorSegundo = 0;
 uint32_t fimBip = 0;
 byte bipLigado = 0;
 
-// ========================================
+
 // TECLADO 4X3 (4 LINHAS E 3 COLUNAS)
-// ========================================
+
 // COMO FUNCIONA
 //   Varredura de matriz: o teclado tem 12 teclas mas so 7 fios. Cada tecla
 //   liga uma coluna a uma linha. O codigo coloca uma coluna por vez em 0V
@@ -471,9 +463,8 @@ char lerTeclado() {
   return teclaPressionada;
 }
 
-// ========================================
 // [OLED] DISPLAY OLED 0,96" I2C (SSD1306 128x64)
-// ========================================
+
 // COMO FUNCIONA
 //   O jogo foi escrito para um LCD 16x2. Para trocar de display sem mexer
 //   nas telas, as funcoes do LCD foram mantidas com o mesmo nome e agora
@@ -643,9 +634,7 @@ void telaDesafio(const char* nome, const char* dica) {
   textoLCD(dica);
 }
 
-// ========================================
 // [ALTERACAO LCD] TEMPO RESTANTE NO LCD
-// ========================================
 
 // Durante o jogo o tempo fica no canto direito da linha de baixo
 // (colunas 12 a 15, formato M:SS). Todas as telas do jogo deixam a
@@ -665,9 +654,9 @@ void mostrarTempoLCD(unsigned int tempo) {
   enviarLCD('0' + (tempo % 10), 1);
 }
 
-// ========================================
+
 // DISPLAY HT16K33
-// ========================================
+
 // COMO FUNCIONA
 //   Display de 4 digitos de 7 segmentos com controlador HT16K33 no I2C.
 //   Cada digito e um byte na memoria do HT16K33 (enderecos 0, 2, 6 e 8;
@@ -732,9 +721,8 @@ void mostrarTempo(byte minutos, byte segundos) {
   Wire.endTransmission();
 }
 
-// ========================================
 // TIMER1 - INTERRUPCAO A CADA 1 ms
-// ========================================
+
 // COMO FUNCIONA
 //   Modo CTC (zera ao atingir OCR1A) com prescaler 64:
 //   16 MHz / 64 = 250 kHz, ou seja 4 us por contagem. 250 contagens
@@ -792,9 +780,9 @@ ISR(TIMER1_COMPA_vect) {
   }
 }
 
-// ========================================
+
 // [INTEGRACAO] BIP NAO BLOQUEANTE
-// ========================================
+
 // COMO FUNCIONA
 //   bip() liga o tom e anota quando ele deve acabar. atualizarBip(),
 //   chamada todo loop, desliga o tom na hora certa. Assim o som nao
@@ -817,9 +805,8 @@ void atualizarBip() {
   }
 }
 
-// ========================================
 // [INTEGRACAO] ERROS E PENALIDADE
-// ========================================
+
 // COMO FUNCIONA
 //   Todos os desafios chamam registrarErro(). Ela soma o erro e desconta a
 //   penalidade com as interrupcoes desligadas (cli/sei), porque a ISR do
@@ -897,9 +884,8 @@ byte servicoBomba() {
   return (tempoAtual > 0 && erros < MAX_ERROS_JOGO);
 }
 
-// ========================================================================
 // DESAFIO 1: HEXADECIMAL -> DECIMAL (arquivo original binario_decimal1 (2).ino)
-// ========================================================================
+
 // COMO FUNCIONA
 //   Sorteia um numero de 1 a 255 e mostra em hexadecimal (ex.: 0x2F).
 //   O jogador digita o valor em decimal (2*16 + 15 = 47) e confirma com #.
@@ -1117,9 +1103,8 @@ byte hexadecimal_executar() {
   return 0;
 }
 
-// ========================================================================
 // DESAFIO 2: COFRE (cofre.ino)
-// ========================================================================
+
 // COMO FUNCIONA
 //   O ADC le os dois potenciometros alternando os canais A0 e A1, sem
 //   esperar a conversao: se ela terminou, guarda o valor e ja dispara a
@@ -1339,9 +1324,8 @@ byte cofre_executar() {
   return 0;
 }
 
-// ========================================================================
 // DESAFIO 3: SEQUENCIA (desafio_sequencia.ino)
-// ========================================================================
+
 // COMO FUNCIONA
 //   Maquina de estados: cada chamada de sequencia_executar() faz um passo
 //   e volta, sem travar o jogo.
