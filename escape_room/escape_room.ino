@@ -1,38 +1,70 @@
 // ========================================================================
-// ESCAPE ROOM - INTEGRACAO DE TODOS OS MODULOS EM UM UNICO ARDUINO UNO
+// ESCAPE ROOM - DESARME A BOMBA (DAS 5332, UFSC)
 // ========================================================================
 //
-// Este arquivo junta, em um so sketch:
-//   bomba.ino                -> fluxo do jogo (dificuldade, cronometro, LCD, display)
-//   binario_decimal1 (2).ino -> desafio HEX -> DECIMAL (teclado + LCD)
-//   cofre.ino                -> desafio do cofre (2 potenciometros)
-//   desafio_sequencia.ino    -> desafio da sequencia (2 LEDs + 2 botoes)
-//   fios.ino                 -> desafio dos fios (3 fios + leitura no ADC)
+// O QUE E
+//   Jogo de escape room num Arduino Uno. O jogador escolhe a dificuldade,
+//   o cronometro comeca em 3:00 e ele precisa resolver 4 desafios, um de
+//   cada vez e em ordem sorteada, antes do tempo acabar. Cada erro desconta
+//   5 s (facil) ou 10 s (dificil); no terceiro erro, ou com o tempo em zero,
+//   a bomba "explode" e o jogo recomeca.
+//
+// DE ONDE VEIO CADA PARTE
+//   bomba.ino                -> fluxo do jogo (dificuldade, cronometro, telas)
+//   binario_decimal1 (2).ino -> desafio 1: converter hexadecimal em decimal
+//   cofre.ino                -> desafio 2: 2 potenciometros nas faixas certas
+//   desafio_sequencia.ino    -> desafio 3: repetir a sequencia dos LEDs
+//   fios.ino                 -> desafio 4: ligar cada fio na cor certa
 //   buzzer.ino               -> aviso sonoro
 //
-// O codigo de cada modulo foi mantido o mais proximo possivel do original.
-// Os trechos alterados para a integracao estao marcados com "[INTEGRACAO]".
-// Os ajustes posteriores (tempo no LCD, teclado 4x3, debounce e reinicio
-// pelo "*") estao marcados com "[ALTERACAO ...]".
-// O mapa de pinos e as mudancas estao explicados no README.md.
+// COMO O PROGRAMA E ORGANIZADO (e por que)
+//   1. Base de tempo unica: o Timer1 gera uma interrupcao a cada 1 ms.
+//      A ISR so incrementa o contador "ms" e, a cada 1000 ms, desconta 1 s
+//      do cronometro. Todo o resto do programa mede tempo comparando "ms",
+//      em vez de usar delay(). Assim nada trava o jogo.
+//   2. ISRs curtas: as 5 interrupcoes (Timer1, Timer2, INT0, PCINT0 e
+//      recepcao da UART) so atualizam variaveis volatile ou levantam flags.
+//      Quem decide o que fazer com isso e o loop() principal.
+//   3. Laco principal sem bloqueio: o loop() le o teclado, atualiza o
+//      cronometro e chama o desafio atual. Cada desafio faz um passo e
+//      volta (maquina de estados), entao o tempo continua aparecendo e o
+//      jogo pode explodir a qualquer momento.
+//   4. Perifericos por registradores (exigencia do enunciado): GPIO (DDRx,
+//      PORTx, PINx), Timer1, Timer2, ADC (ADMUX, ADCSRA), UART (UBRR0,
+//      UCSR0x, UDR0) e interrupcoes externas (EICRA, EIMSK, PCICR, PCMSK0).
+//      Bibliotecas so para o que a disciplina nao cobre: Wire (I2C) e
+//      SSD1306Ascii (driver do OLED, github.com/greiman/SSD1306Ascii).
+//
+// MARCADORES NO CODIGO
+//   [INTEGRACAO]   mudancas feitas para juntar os modulos num sketch so
+//   [ALTERACAO ..] tempo no display, teclado 4x3, debounce, reinicio pelo *
+//   [OLED]         troca do LCD 16x2 (PCF8574) pelo OLED 0,96" I2C
+//   [TECLADO]      ordem real dos terminais e pull-up interno
+//   [SORTEIO]      ordem dos desafios a cada partida
+//   [FIOS]         circuito dos fios com LEDs e calibracao do ADC
+//   [SEQUENCIA]    inicio da rodada pelo botao e LED no clique
+//   [TESTE]        modo de teste de um desafio so (ambientes jogo_*)
 //
 // MAPA DE PINOS
-//   D0/D1  UART (comando 'R' reinicia o jogo; segurar '*' tambem reinicia)
-//   D2     BOTAO1 da sequencia (nao mudou), interrupcao externa INT0
-//   D3-D6  linhas do teclado 4x3 (1-2-3, 4-5-6, 7-8-9, *-0-#)
-//   D7-D9  colunas do teclado 4x3 (pull-up externo de 10k)
-//   D10    BOTAO2 da sequencia (era D3), interrupcao PCINT2
-//   D11    fio superior amarelo
-//   D12    fio superior verde    + LED2 da sequencia / LED do cofre 2
-//   D13    fio superior vermelho + LED1 da sequencia / LED do cofre 1
+//   D0/D1  UART 9600 8N1 ('R' reinicia o jogo; segurar '*' tambem reinicia)
+//   D2     BOTAO1 da sequencia, interrupcao externa INT0
+//   D3-D5  colunas do teclado 4x3 (1-4-7-*, 2-5-8-0, 3-6-9-#)
+//   D6-D9  linhas do teclado 4x3 (pull-up interno)
+//   D10    BOTAO2 da sequencia, interrupcao de mudanca de pino PCINT2
+//   D11    fio superior amarelo + LED amarelo
+//   D12    fio superior verde    + LED verde    (LED2 da sequencia / cofre 2)
+//   D13    fio superior vermelho + LED vermelho (LED1 da sequencia / cofre 1)
 //   A0     potenciometro do cofre 1
 //   A1     potenciometro do cofre 2
-//   A2     leitura dos fios inferiores (era A1)
-//   A3     buzzer (era D11)
-//   A4/A5  I2C: LCD PCF8574 (0x20) e display HT16K33 (0x70)
+//   A2     leitura dos fios inferiores (divisor de tensao)
+//   A3     buzzer passivo
+//   A4/A5  I2C: OLED SSD1306 128x64 (0x3C) e display HT16K33 (0x70)
 // ========================================================================
 
+#include <Arduino.h>
 #include <Wire.h>
+#include "SSD1306Ascii.h"     // [OLED] biblioteca do display OLED (greiman/SSD1306Ascii)
+#include "SSD1306AsciiWire.h"
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <util/atomic.h>
@@ -53,16 +85,27 @@
 void registrarErro();
 void desligar_leds();
 uint8_t gerar_numero_aleatorio();
+void seq_aguardar_inicio();
 
 // ========================================================================
 // MODULO COMPARTILHADO: BASE DE TEMPO, UART E BUZZER
 // ========================================================================
+// COMO FUNCIONA
+//   Recursos usados por todos os modulos:
+//   - "ms": relogio de 1 ms incrementado pela ISR do Timer1. E lido com
+//     ATOMIC_BLOCK porque tem 32 bits: o AVR le 1 byte por vez, e uma
+//     interrupcao no meio da leitura daria um valor misturado.
+//   - UART por registradores: 9600 baud, 8N1. A transmissao espera o
+//     registrador UDR0 ficar livre (bit UDRE0). A recepcao e por
+//     interrupcao e so levanta a flag de reinicio ao chegar 'R' ou 'r'.
+//   - Buzzer: o Timer2 em modo CTC gera a frequencia, e a ISR inverte o
+//     pino A3 a cada comparacao. O buzzer precisa ser passivo.
 
 // ----------------------------------------
 // BASE DE TEMPO DE 1 ms (Timer1)
 // ----------------------------------------
 // [INTEGRACAO] todos os modulos usavam o Timer1 com uma ISR propria
-// (1 s na bomba, 1 ms nos fios/cofre/sequencia, 10 ms no binario).
+// (1 s na bomba, 1 ms nos fios/cofre/sequencia, 10 ms no hexadecimal).
 // Agora existe uma unica ISR de 1 ms (ver modulo BOMBA), e este contador
 // substitui "ms" (fios e sequencia) e "tempo_ms" (cofre).
 volatile uint32_t ms = 0;
@@ -203,7 +246,9 @@ ISR(TIMER2_COMPA_vect) {
 // ENDERECOS I2C
 // ========================================
 
-#define LCD_ADDR 0x20
+// [OLED] o LCD 16x2 com PCF8574 (0x20) foi trocado por um OLED 0,96" I2C.
+// A maioria desses modulos responde em 0x3C (alguns em 0x3D).
+#define OLED_ADDR 0x3C
 #define DISPLAY_ADDR 0x70
 
 // ========================================
@@ -228,21 +273,30 @@ byte dificuldade = 0;
 #define TEMPO_EXPLOSAO_MS      3000UL // tempo da tela de explosao antes de recomecar
 
 #define NUM_DESAFIOS      4
-#define DESAFIO_BINARIO   0
+#define DESAFIO_HEXADECIMAL   0
 #define DESAFIO_COFRE     1
 #define DESAFIO_SEQUENCIA 2
 #define DESAFIO_FIOS      3
 
+// [TESTE] modo de teste de um desafio so. O platformio.ini define
+// DESAFIO_TESTE nos ambientes jogo_fios, jogo_cofre, jogo_sequencia e
+// jogo_hexadecimal. No ambiente uno (jogo completo) ele nao existe.
+#ifdef DESAFIO_TESTE
+#define TOTAL_DESAFIOS 1
+#else
+#define TOTAL_DESAFIOS NUM_DESAFIOS
+#endif
+
 byte erros = 0;                     // erros somados de todos os desafios
 byte ordemDesafios[NUM_DESAFIOS] = {
-  DESAFIO_BINARIO, DESAFIO_COFRE, DESAFIO_SEQUENCIA, DESAFIO_FIOS
+  DESAFIO_HEXADECIMAL, DESAFIO_COFRE, DESAFIO_SEQUENCIA, DESAFIO_FIOS
 };
 byte indiceDesafio = 0;             // posicao atual em ordemDesafios
 byte desafioIniciado = 0;
 byte vitoria = 0;
 uint32_t esperarAte = 0;            // pausa entre desafios
 uint32_t momentoFim = 0;
-char teclaJogo = '\0';              // tecla lida neste loop, repassada ao binario
+char teclaJogo = '\0';              // tecla lida neste loop, repassada ao hexadecimal
 
 volatile uint16_t contadorSegundo = 0;
 
@@ -252,21 +306,29 @@ byte bipLigado = 0;
 // ========================================
 // TECLADO 4X3 (4 LINHAS E 3 COLUNAS)
 // ========================================
+// COMO FUNCIONA
+//   Varredura de matriz: o teclado tem 12 teclas mas so 7 fios. Cada tecla
+//   liga uma coluna a uma linha. O codigo coloca uma coluna por vez em 0V
+//   e le as 4 linhas. As linhas tem pull-up interno, entao leem 1 quando
+//   soltas e 0 quando a tecla que as liga a coluna em 0V esta apertada.
+//   Sabendo qual coluna estava em 0V e qual linha caiu, sabe-se a tecla.
+//   Debounce por tempo: a leitura so vale depois de ficar igual por 30 ms,
+//   para ignorar o repique mecanico dos contatos.
 
 // [ALTERACAO 4x3] o teclado 4x4 foi trocado por um 4x3.
-// Terminais do teclado (confira a ordem no datasheet do seu modelo):
-// Linha 1 (1 2 3) -> D3
-// Linha 2 (4 5 6) -> D4
-// Linha 3 (7 8 9) -> D5
-// Linha 4 (* 0 #) -> D6
-// Coluna 1        -> D7
-// Coluna 2        -> D8
-// Coluna 3        -> D9
+// [TECLADO] ordem confirmada na bancada (teste 3): ligando os terminais
+// da esquerda para a direita em D3..D9, os 3 primeiros sao as colunas e
+// os 4 ultimos sao as linhas.
+// Terminal 1 Coluna 1 (1 4 7 *) -> D3
+// Terminal 2 Coluna 2 (2 5 8 0) -> D4
+// Terminal 3 Coluna 3 (3 6 9 #) -> D5
+// Terminal 4 Linha 1  (1 2 3)   -> D6
+// Terminal 5 Linha 2  (4 5 6)   -> D7
+// Terminal 6 Linha 3  (7 8 9)   -> D8
+// Terminal 7 Linha 4  (* 0 #)   -> D9
 //
-// Resistores de 10k entre:
-// D7 e 5V
-// D8 e 5V
-// D9 e 5V
+// As colunas sao acionadas (saidas) e as linhas sao lidas (entradas com
+// pull-up interno; resistores externos de 10k para 5V sao opcionais).
 
 const char teclas[4][3] = {
   {'1', '2', '3'},
@@ -275,8 +337,8 @@ const char teclas[4][3] = {
   {'*', '0', '#'}
 };
 
-// Mascara das linhas: D3 a D6 (D2 ficou para o BOTAO1)
-#define LINHAS_TECLADO 0b01111000
+// [TECLADO] mascara das colunas acionadas: D3 a D5 (D2 ficou para o BOTAO1)
+#define COLUNAS_TECLADO 0b00111000
 
 // [ALTERACAO DEBOUNCE] debounce por tempo, independente da velocidade do loop
 #define INTERVALO_VARREDURA_MS 5    // uma varredura a cada 5 ms
@@ -287,42 +349,46 @@ uint32_t inicioTeclaPressionada = 0; // quando ela foi aceita (para tecla segura
 
 void iniciarTeclado() {
 
-  // D3 a D6: saidas
-  DDRD |= LINHAS_TECLADO;
+  // D3 a D5: saidas (colunas)
+  DDRD |= COLUNAS_TECLADO;
 
-  // D7: entrada
-  DDRD &= ~0b10000000;
+  // D6 e D7: entradas (linhas 1 e 2)
+  DDRD &= ~0b11000000;
 
-  // D8 e D9: entradas
+  // D8 e D9: entradas (linhas 3 e 4)
   DDRB &= ~0b00000011;
 
-  // Linhas em HIGH
-  PORTD |= LINHAS_TECLADO;
+  // Colunas em HIGH
+  PORTD |= COLUNAS_TECLADO;
 
-  // Pull-ups internos desativados
-  // Usaremos os resistores externos
-  PORTD &= ~0b10000000;
-  PORTB &= ~0b00000011;
+  // [TECLADO] pull-ups internos ligados nas linhas (D6 a D9).
+  // Assim o teclado funciona com ou sem os resistores externos de 10k.
+  PORTD |= 0b11000000;
+  PORTB |= 0b00000011;
 }
 
-bool colunaPressionada(byte coluna) {
+// [TECLADO] le uma linha: LOW quando a tecla da coluna acionada esta apertada
+bool linhaPressionada(byte linha) {
 
-  switch (coluna) {
+  switch (linha) {
 
     case 0:
-      return !(PIND & (1 << PD7));
+      return !(PIND & (1 << PD6));
 
     case 1:
-      return !(PINB & (1 << PB0));
+      return !(PIND & (1 << PD7));
 
     case 2:
+      return !(PINB & (1 << PB0));
+
+    case 3:
       return !(PINB & (1 << PB1));
   }
 
   return false;
 }
 
-// [ALTERACAO DEBOUNCE] varre as 4 linhas e devolve a tecla apertada.
+// [ALTERACAO DEBOUNCE] varre as 3 colunas e devolve a tecla apertada.
 // Duas ou mais teclas ao mesmo tempo contam como nenhuma, para evitar
 // leituras fantasmas.
 char lerTecladoBruto() {
@@ -330,19 +396,19 @@ char lerTecladoBruto() {
   char encontrada = '\0';
   byte quantidade = 0;
 
-  for (byte linha = 0; linha < 4; linha++) {
+  for (byte coluna = 0; coluna < 3; coluna++) {
 
-    // Todas as linhas em HIGH
-    PORTD |= LINHAS_TECLADO;
+    // Todas as colunas em HIGH
+    PORTD |= COLUNAS_TECLADO;
 
-    // Somente uma linha em LOW
-    PORTD &= ~(1 << (linha + 3));
+    // Somente uma coluna em LOW
+    PORTD &= ~(1 << (coluna + 3));
 
     _delay_us(100);
 
-    for (byte coluna = 0; coluna < 3; coluna++) {
+    for (byte linha = 0; linha < 4; linha++) {
 
-      if (colunaPressionada(coluna)) {
+      if (linhaPressionada(linha)) {
 
         encontrada = teclas[linha][coluna];
         quantidade++;
@@ -350,7 +416,7 @@ char lerTecladoBruto() {
     }
   }
 
-  PORTD |= LINHAS_TECLADO;
+  PORTD |= COLUNAS_TECLADO;
 
   if (quantidade != 1) {
     return '\0';
@@ -406,46 +472,54 @@ char lerTeclado() {
 }
 
 // ========================================
-// LCD 16X2 COM PCF8574
+// [OLED] DISPLAY OLED 0,96" I2C (SSD1306 128x64)
 // ========================================
+// COMO FUNCIONA
+//   O jogo foi escrito para um LCD 16x2. Para trocar de display sem mexer
+//   nas telas, as funcoes do LCD foram mantidas com o mesmo nome e agora
+//   chamam a biblioteca SSD1306Ascii. Ela so desenha texto direto no OLED,
+//   sem guardar uma copia da tela na RAM (o Uno so tem 2 KB).
 
-// P0 = RS
-// P2 = E
-// P3 = luz de fundo
-// P4-P7 = DB4-DB7
+// O resto do codigo continua usando as funcoes do LCD 16x2
+// (limparLCD, linhaLCD, textoLCD, enviarLCD, comandoLCD). Aqui elas
+// passam a desenhar no OLED. A fonte de 8 x 16 pixels da exatamente
+// 16 colunas na tela de 128 pixels, igual ao LCD.
+//   Linha 0 do LCD -> faixa de cima do OLED (paginas 0 e 1)
+//   Linha 1 do LCD -> meio do OLED (paginas 4 e 5)
 
-void enviarPCF(byte valor) {
+SSD1306AsciiWire oled;
 
-  Wire.beginTransmission(LCD_ADDR);
-  // [INTEGRACAO] mantem a luz de fundo (P3) ligada, como no binario
-  Wire.write(valor | 0x08);
-  Wire.endTransmission();
+#define OLED_LARGURA_CARACTERE 8   // 7 pixels da fonte + 1 de espaco
+#define OLED_PAGINA_LINHA0     0
+#define OLED_PAGINA_LINHA1     4
+
+// Posiciona o cursor na coluna (0 a 15) e linha (0 ou 1) do "LCD"
+void posicaoOLED(byte coluna, byte linha) {
+
+  oled.setCursor(coluna * OLED_LARGURA_CARACTERE,
+                 linha ? OLED_PAGINA_LINHA1 : OLED_PAGINA_LINHA0);
 }
 
-void pulsoLCD(byte valor) {
-
-  enviarPCF(valor | 0x04);
-  _delay_us(100);
-
-  enviarPCF(valor & 0xFB);
-  _delay_us(100);
-}
-
-void nibbleLCD(byte valor, byte rs) {
-
-  pulsoLCD((valor & 0xF0) | rs);
-}
-
-void enviarLCD(byte valor, byte rs) {
-
-  nibbleLCD(valor, rs);
-  nibbleLCD(valor << 4, rs);
-}
-
+// Comandos do LCD que o jogo usa: 0x01 limpa a tela e 0x80 | endereco
+// posiciona o cursor (0x00-0x0F linha 0, 0x40-0x4F linha 1).
 void comandoLCD(byte valor) {
 
-  enviarLCD(valor, 0);
-  _delay_ms(2);
+  if (valor == 0x01) {
+    oled.clear();
+  } else if (valor & 0x80) {
+    byte endereco = valor & 0x7F;
+    posicaoOLED(endereco & 0x0F, endereco >= 0x40);
+  }
+}
+
+// rs = 1: escreve o caractere; rs = 0: e um comando
+void enviarLCD(byte valor, byte rs) {
+
+  if (rs) {
+    oled.write(valor);
+  } else {
+    comandoLCD(valor);
+  }
 }
 
 void textoLCD(const char* texto) {
@@ -459,24 +533,10 @@ void textoLCD(const char* texto) {
 
 void iniciarLCD() {
 
-  _delay_ms(100);
-
-  nibbleLCD(0x30, 0);
-  _delay_ms(5);
-
-  nibbleLCD(0x30, 0);
-  _delay_ms(5);
-
-  nibbleLCD(0x30, 0);
-  _delay_ms(1);
-
-  nibbleLCD(0x20, 0);
-  _delay_ms(5);
-
-  comandoLCD(0x28);
-  comandoLCD(0x0C);
-  comandoLCD(0x06);
-  comandoLCD(0x01);
+  oled.begin(&Adafruit128x64, OLED_ADDR);
+  oled.setFont(ZevvPeep8x16);
+  oled.setLetterSpacing(1);
+  oled.clear();
 }
 
 void limparLCD() {
@@ -575,7 +635,8 @@ void telaDesafio(const char* nome, const char* dica) {
 
   linhaLCD(0);
   enviarLCD('1' + indiceDesafio, 1);
-  textoLCD("/4 ");
+  enviarLCD('0' + TOTAL_DESAFIOS, 1);   // [TESTE] era sempre "/4"
+  textoLCD(" ");
   textoLCD(nome);
 
   linhaLCD(1);
@@ -607,6 +668,11 @@ void mostrarTempoLCD(unsigned int tempo) {
 // ========================================
 // DISPLAY HT16K33
 // ========================================
+// COMO FUNCIONA
+//   Display de 4 digitos de 7 segmentos com controlador HT16K33 no I2C.
+//   Cada digito e um byte na memoria do HT16K33 (enderecos 0, 2, 6 e 8;
+//   o 4 acende os dois pontos). "segmentos" diz quais segmentos acender
+//   para cada numero de 0 a 9.
 
 const byte segmentos[10] = {
   0x3F,
@@ -669,6 +735,12 @@ void mostrarTempo(byte minutos, byte segundos) {
 // ========================================
 // TIMER1 - INTERRUPCAO A CADA 1 ms
 // ========================================
+// COMO FUNCIONA
+//   Modo CTC (zera ao atingir OCR1A) com prescaler 64:
+//   16 MHz / 64 = 250 kHz, ou seja 4 us por contagem. 250 contagens
+//   (OCR1A = 249) dao 1 ms. A ISR conta "ms" e, a cada 1000 ms, desconta
+//   1 s do cronometro e levanta a flag atualizarTempo para o loop()
+//   redesenhar o tempo.
 
 // [INTEGRACAO] era 1 s (prescaler 1024). Agora e 1 ms (prescaler 64),
 // que e a base de tempo dos desafios. O segundo da bomba e contado na ISR.
@@ -723,6 +795,10 @@ ISR(TIMER1_COMPA_vect) {
 // ========================================
 // [INTEGRACAO] BIP NAO BLOQUEANTE
 // ========================================
+// COMO FUNCIONA
+//   bip() liga o tom e anota quando ele deve acabar. atualizarBip(),
+//   chamada todo loop, desliga o tom na hora certa. Assim o som nao
+//   trava o jogo como um delay() travaria.
 
 void bip(uint16_t frequencia, uint16_t duracao) {
 
@@ -744,6 +820,11 @@ void atualizarBip() {
 // ========================================
 // [INTEGRACAO] ERROS E PENALIDADE
 // ========================================
+// COMO FUNCIONA
+//   Todos os desafios chamam registrarErro(). Ela soma o erro e desconta a
+//   penalidade com as interrupcoes desligadas (cli/sei), porque a ISR do
+//   Timer1 tambem altera tempoRestante. servicoBomba() redesenha o tempo e
+//   avisa o loop() quando a bomba deve explodir.
 
 // Chamada pelos desafios a cada erro do jogador.
 // Desconta 5 s (facil) ou 10 s (dificil) do cronometro.
@@ -817,23 +898,23 @@ byte servicoBomba() {
 }
 
 // ========================================================================
-// DESAFIO 1: BINARIO / HEXADECIMAL -> DECIMAL (binario_decimal1 (2).ino)
+// DESAFIO 1: HEXADECIMAL -> DECIMAL (arquivo original binario_decimal1 (2).ino)
 // ========================================================================
+// COMO FUNCIONA
+//   Sorteia um numero de 1 a 255 e mostra em hexadecimal (ex.: 0x2F).
+//   O jogador digita o valor em decimal (2*16 + 15 = 47) e confirma com #.
+//   O * (toque curto) apaga. Erro: confirmar um valor errado.
 // [INTEGRACAO]
 // - O I2C passa a ser feito pela biblioteca Wire (a mesma da bomba), em vez
 //   do TWI por registradores, para nao misturar dois drivers no mesmo barramento.
 // - O LCD ja e inicializado pela bomba (lcd_init removido).
-// - O teclado proprio (D2-D5 / D8-D10) foi removido: o binario usa o teclado
+// - O teclado proprio (D2-D5 / D8-D10) foi removido: o hexadecimal usa o teclado
 //   da bomba (agora 4x3), cuja tecla e lida no loop principal (teclaJogo).
 // - Os erros agora sao os erros do jogo (registrarErro), nao locais.
 
-#define PCF_ENDERECO      LCD_ADDR   // PCF8574 com A0, A1 e A2 no GND
-
-// bits do PCF8574 ligados ao LCD
-#define LCD_RS            0x01   // P0
-#define LCD_E             0x04   // P2
-#define LCD_LUZ           0x08   // P3 (luz de fundo, se estiver ligada)
-// P4 a P7 levam os dados D4 a D7 do LCD
+// [OLED] o hexadecimal escrevia direto no PCF8574 do LCD. Agora cada byte vai
+// para enviarLCD() da bomba, que desenha no OLED.
+#define LCD_RS            0x01   // indica caractere (e nao comando)
 
 #define FASE_BITS         8      // número sorteado de 8 bits (0x00 a 0xFF)
 #define FASE_NUM_MIN      1      // menor número sorteado
@@ -850,30 +931,13 @@ byte servicoBomba() {
 
 static uint8_t estado_desafio = DESAFIO_ANDAMENTO;
 
-// [INTEGRACAO] envia dois bytes ao PCF8574 usando a Wire
-static void pcf_escreve_dois(uint8_t primeiro, uint8_t segundo) {
-  Wire.beginTransmission(PCF_ENDERECO);
-  Wire.write(primeiro);
-  Wire.write(segundo);
-  Wire.endTransmission();
-}
-
-
-static void lcd_nibble(uint8_t nibble, uint8_t rs) {
-  uint8_t dado = (nibble << 4) | LCD_LUZ | rs;
-  pcf_escreve_dois(dado | LCD_E, dado & ~LCD_E);
-}
-
-
 static void lcd_byte(uint8_t valor, uint8_t rs) {
-  lcd_nibble(valor >> 4, rs);
-  lcd_nibble(valor & 0x0F, rs);
+  enviarLCD(valor, rs ? 1 : 0);
 }
 
 // envia um comando ao LCD. limpar e voltar ao início levam cerca de 2 ms
 static void lcd_comando(uint8_t comando) {
   lcd_byte(comando, 0);
-  if (comando <= 0x03) _delay_ms(2);
 }
 
 // escreve um caractere na posição atual do cursor
@@ -1030,14 +1094,14 @@ uint8_t fase_teclado_atualiza(void) {
 }
 
 // [INTEGRACAO] era o setup(): sorteia o numero e desenha a tela
-void binario_iniciar() {
+void hexadecimal_iniciar() {
   estado_desafio = DESAFIO_ANDAMENTO;
   fase_teclado_inicia((uint16_t)ler_tempo_ms() ^ TCNT1);
 }
 
 // [INTEGRACAO] era o loop(): devolve 1 quando o desafio foi concluido.
 // O terceiro erro agora e tratado pela bomba (explosao).
-byte binario_executar() {
+byte hexadecimal_executar() {
   if (estado_desafio != DESAFIO_ANDAMENTO) return 1;
 
   uint8_t r = fase_teclado_atualiza();
@@ -1056,6 +1120,13 @@ byte binario_executar() {
 // ========================================================================
 // DESAFIO 2: COFRE (cofre.ino)
 // ========================================================================
+// COMO FUNCIONA
+//   O ADC le os dois potenciometros alternando os canais A0 e A1, sem
+//   esperar a conversao: se ela terminou, guarda o valor e ja dispara a
+//   proxima. Faz media de 8 leituras para tirar ruido. Cada LED acende
+//   quando o seu potenciometro esta na faixa certa, com histerese para nao
+//   piscar na borda. O cofre abre com os dois na faixa por 1 s seguido.
+//   Nao tem erro.
 // [INTEGRACAO]
 // - LEDs mudaram de D5/D6 (agora teclado) para D13/D12.
 // - Timer1 e UART vem do modulo compartilhado.
@@ -1271,6 +1342,14 @@ byte cofre_executar() {
 // ========================================================================
 // DESAFIO 3: SEQUENCIA (desafio_sequencia.ino)
 // ========================================================================
+// COMO FUNCIONA
+//   Maquina de estados: cada chamada de sequencia_executar() faz um passo
+//   e volta, sem travar o jogo.
+//   AGUARDA_INICIO ("PRESSIONE BOTAO") -> APRESENTANDO (os 2 LEDs piscam e
+//   a sequencia 1,2,2,1,2 e mostrada) -> PAUSA -> ESPERA_BOTAO ->
+//   CONFIRMA_BOTAO (debounce) -> SOLTAR -> SOLTAR_REPIQUE -> confere.
+//   Os botoes geram interrupcao (INT0 no D2, PCINT2 no D10), e a ISR so
+//   anota qual botao foi. Erro: apertar o botao errado.
 // [INTEGRACAO]
 // - LEDs mudaram de D6/D4 (agora teclado) para D13/D12.
 // - BOTAO1 continua em D2 e agora gera a interrupcao externa INT0.
@@ -1321,6 +1400,7 @@ byte cofre_executar() {
 #define SEQ_PAUSA_ERRO      1000  // pausa antes de repetir a sequencia
 #define SEQ_VITORIA_ACESO   1000
 #define SEQ_VITORIA_APAGADO 300
+#define SEQ_PISCA_CLIQUE    150   // [SEQUENCIA] LED do botao aceso no clique
 
 // Estados da maquina
 #define SEQ_APRESENTANDO   0   // era apresentar_sequencia()
@@ -1331,6 +1411,8 @@ byte cofre_executar() {
 #define SEQ_SOLTAR_REPIQUE 5   // era aguardar_soltar(): repique na liberacao
 #define SEQ_ERRO           6   // era indicar_erro() + espera_ms(1000)
 #define SEQ_VITORIA        7   // era indicar_vitoria()
+#define SEQ_AGUARDA_INICIO 8   // [SEQUENCIA] "PRESSIONE BOTAO" antes da rodada
+#define SEQ_INICIO_SOLTAR  9   // [SEQUENCIA] espera soltar o botao do inicio
 
 // 3. VARIAVEIS
 
@@ -1350,6 +1432,7 @@ uint8_t seq_passo = 0;        // passo dentro do estado (piscadas, LEDs)
 uint8_t seq_posicao = 0;      // posicao da resposta na sequencia
 uint8_t seq_resposta = 0;     // botao lido (0 = descartar)
 uint32_t seq_marca = 0;       // instante em que o passo atual comecou
+uint32_t seq_marca_led = 0;   // [SEQUENCIA] quando o LED do clique acendeu
 
 // 4. INTERRUPCOES DOS BOTOES (so levantam a flag)
 
@@ -1425,7 +1508,7 @@ void sequencia_iniciar() {
   seq_posicao = 0;
   sequencia_concluida = false;
 
-  seq_ir_para(SEQ_APRESENTANDO);
+  seq_aguardar_inicio();   // [SEQUENCIA] era seq_ir_para(SEQ_APRESENTANDO)
 }
 
 // 8. APAGAR OS DOIS LEDS
@@ -1456,6 +1539,22 @@ void reiniciar_desafio() {
 }
 
 // 13. CONFERIR A RESPOSTA DE UM BOTAO
+
+// [SEQUENCIA] cada rodada so comeca quando o jogador aperta um botao
+void seq_aguardar_inicio() {
+
+  apagar_leds();
+  botao_evento = 0;
+
+  limparLCD();
+  linhaLCD(0);
+  textoLCD("PRESSIONE BOTAO");
+  linhaLCD(1);
+  textoLCD("P/ COMECAR");
+  tempoLCDPendente = 1;   // redesenha o tempo no canto
+
+  seq_ir_para(SEQ_AGUARDA_INICIO);
+}
 
 void seq_conferir_resposta() {
 
@@ -1549,6 +1648,13 @@ byte sequencia_executar() {
         } else {
           // Os dois juntos: ignora a tentativa (resposta 0)
           seq_resposta = (botao1 && botao2) ? 0 : (botao1 ? 1 : 2);
+
+          // [SEQUENCIA] acende o LED do botao apertado
+          if (seq_resposta != 0) {
+            acender_led(seq_resposta);
+            seq_marca_led = ler_tempo_ms();
+          }
+
           seq_ir_para(SEQ_SOLTAR);
         }
       }
@@ -1565,15 +1671,40 @@ byte sequencia_executar() {
     case SEQ_SOLTAR_REPIQUE:
       if (PRESSIONADO(BOTAO1) || PRESSIONADO(BOTAO2)) {
         seq_ir_para(SEQ_SOLTAR);
-      } else if (seq_decorrido() >= SEQ_DEBOUNCE) {
+      } else if (seq_decorrido() >= SEQ_DEBOUNCE &&
+                 ler_tempo_ms() - seq_marca_led >= SEQ_PISCA_CLIQUE) {
         // Ignora as interrupcoes geradas pelo repique
         botao_evento = 0;
+
+        // [SEQUENCIA] apaga o LED do clique (fica aceso no minimo 150 ms)
+        apagar_leds();
 
         if (seq_resposta == 0) {
           seq_ir_para(SEQ_ESPERA_BOTAO);
         } else {
           seq_conferir_resposta();
         }
+      }
+      break;
+
+    // [SEQUENCIA] espera qualquer botao para comecar a rodada
+    case SEQ_AGUARDA_INICIO:
+      if (botao_evento) {
+        botao_evento = 0;
+        seq_ir_para(SEQ_INICIO_SOLTAR);
+      }
+      break;
+
+    // [SEQUENCIA] botao solto por SEQ_DEBOUNCE: apresenta a sequencia
+    case SEQ_INICIO_SOLTAR:
+      if (PRESSIONADO(BOTAO1) || PRESSIONADO(BOTAO2)) {
+        seq_marca = ler_tempo_ms();
+      } else if (seq_decorrido() >= SEQ_DEBOUNCE) {
+        botao_evento = 0;
+        telaDesafio("SEQUENCIA", "REPITA LEDS");
+        tempoLCDPendente = 1;
+        uart_enviar_linha("RODADA DA SEQUENCIA");
+        seq_ir_para(SEQ_APRESENTANDO);
       }
       break;
 
@@ -1590,7 +1721,7 @@ byte sequencia_executar() {
           seq_proximo_passo();
         }
       } else if (seq_decorrido() >= SEQ_PISCA_ERRO + SEQ_PAUSA_ERRO) {
-        seq_ir_para(SEQ_APRESENTANDO);
+        seq_aguardar_inicio();   // [SEQUENCIA] nova rodada pelo botao
       }
       break;
 
@@ -1618,6 +1749,16 @@ byte sequencia_executar() {
 // ========================================================================
 // DESAFIO 4: FIOS (fios.ino)
 // ========================================================================
+// COMO FUNCIONA
+//   Cada fio de cima sai de um pino (D13, D12, D11). Cada terminal de
+//   baixo tem um LED e um resistor diferente e todos terminam num ponto
+//   comum, ligado ao A2 e a um resistor de 1k para o GND (divisor de
+//   tensao). O codigo coloca um fio de cima por vez em 5V, deixa os outros
+//   em alta impedancia e le o A2: a tensao diz em qual terminal de baixo
+//   esse fio esta. Os LEDs de baixo tambem funcionam como diodos e impedem
+//   a corrente de voltar por outro fio.
+//   Vitoria: os 3 fios nas cores certas por 0,5 s.
+//   Erro: fio vermelho de cima no terminal amarelo (conta uma vez).
 // [INTEGRACAO]
 // - Leitura dos fios inferiores mudou de A1 (agora cofre) para A2.
 // - O display de 7 segmentos e do cronometro da bomba; o contador de 5 s
@@ -1643,6 +1784,9 @@ uint32_t semente_aleatoria = 123456789UL;
 const uint8_t fios_cima[3] = {
   PB5, PB4, PB3
 };
+
+// [TESTE] ultimo valor do ADC (A2) lido para cada fio superior
+uint16_t fios_ultimo_valor[3] = {0, 0, 0};
 
 // CONTROLE DAS CONEXOES
 uint8_t candidato[3] = {255, 255, 255};
@@ -1714,20 +1858,33 @@ uint16_t ler_adc() {
 // 2 = amarelo
 // 255 = nenhum
 
+// [FIOS] faixas do ADC de cada cor, para o circuito com LED em baixo:
+//   fio de cima (5V) -> LED de baixo -> resistor -> A2 -> 1k -> GND
+// Calibrado na bancada (jogo_fios), com os 3 fios ligados nas cores certas:
+//   vermelho ~143 | verde ~559 | amarelo ~55
+// Cada divisa fica no meio do caminho entre duas leituras.
+// Valores antigos: vermelho 200-230, verde 95-125, amarelo 170-195.
+#define FIO_VERMELHO_MIN 100
+#define FIO_VERMELHO_MAX 349
+#define FIO_VERDE_MIN    350
+#define FIO_VERDE_MAX    1023
+#define FIO_AMARELO_MIN  25
+#define FIO_AMARELO_MAX  99
+
 uint8_t identificar_fio(uint16_t valor) {
 
   // VERMELHO
-  if (valor >= 200 && valor <= 230) {
+  if (valor >= FIO_VERMELHO_MIN && valor <= FIO_VERMELHO_MAX) {
     return 0;
   }
 
   // VERDE
-  if (valor >= 95 && valor <= 125) {
+  if (valor >= FIO_VERDE_MIN && valor <= FIO_VERDE_MAX) {
     return 1;
   }
 
   // AMARELO
-  if (valor >= 170 && valor <= 195) {
+  if (valor >= FIO_AMARELO_MIN && valor <= FIO_AMARELO_MAX) {
     return 2;
   }
 
@@ -1735,10 +1892,17 @@ uint8_t identificar_fio(uint16_t valor) {
 }
 
 // TESTA UM FIO SUPERIOR
+// [FIOS] os outros dois fios ficam em alta impedancia (entrada, sem
+// pull-up) durante a medida. Antes eles ficavam em 0V e, se estivessem
+// ligados, puxavam a tensao do A2 para baixo e mudavam a leitura.
 uint8_t testar_fio(uint8_t cima) {
 
+  // Os 3 fios como entradas, sem pull-up
+  DDRB &= ~((1 << PB3) | (1 << PB4) | (1 << PB5));
   desligar_leds();
 
+  // So o fio testado como saida em 5V
+  set_bit(DDRB, fios_cima[cima]);
   set_bit(PORTB, fios_cima[cima]);
 
   _delay_us(200);
@@ -1747,7 +1911,11 @@ uint8_t testar_fio(uint8_t cima) {
 
   uint16_t valor = ler_adc();
 
+  // Volta os 3 como saidas, com os LEDs acesos
+  DDRB |= (1 << PB3) | (1 << PB4) | (1 << PB5);
   ligar_leds();
+
+  fios_ultimo_valor[cima] = valor;   // [TESTE] para o relatorio na serial
 
   return identificar_fio(valor);
 }
@@ -1866,7 +2034,46 @@ byte fios_executar() {
 
   uint32_t agora = ler_tempo_ms();
 
+  // [FIOS] mede os fios a cada 20 ms. Durante a medida os LEDs piscam
+  // apagados; medindo sem parar eles ficavam fracos.
+  static uint32_t ultima_medida = 0;
+
+  if (agora - ultima_medida < 20UL) {
+    return 0;
+  }
+
+  ultima_medida = agora;
+
   verificar_fios(agora);
+
+#ifdef DESAFIO_TESTE
+  // [TESTE] a cada 1 s mostra o valor do A2 e a cor reconhecida de cada fio
+  static uint32_t ultimo_relatorio = 0;
+
+  if (agora - ultimo_relatorio >= 1000UL) {
+
+    ultimo_relatorio = agora;
+
+    const char* nomes_cima[3] = {"VERMELHO", " VERDE", " AMARELO"};
+
+    for (uint8_t c = 0; c < 3; c++) {
+
+      uart_enviar_texto(nomes_cima[c]);
+      uart_enviar_texto(": A2=");
+      uart_enviar_numero(fios_ultimo_valor[c]);
+      uart_enviar_texto(" -> ");
+
+      switch (identificar_fio(fios_ultimo_valor[c])) {
+        case 0:  uart_enviar_texto("vermelho"); break;
+        case 1:  uart_enviar_texto("verde"); break;
+        case 2:  uart_enviar_texto("amarelo"); break;
+        default: uart_enviar_texto("nada"); break;
+      }
+
+      uart_enviar_texto(c < 2 ? " | " : "\r\n");
+    }
+  }
+#endif
 
   if (fios_todos_corretos(agora)) {
 
@@ -1881,20 +2088,58 @@ byte fios_executar() {
 // ========================================================================
 // [INTEGRACAO] CONTROLE DOS DESAFIOS
 // ========================================================================
+// COMO FUNCIONA
+//   ordemDesafios guarda a ordem da partida. sortearOrdem() parte da
+//   ordem base e embaralha (algoritmo de Fisher-Yates), garantindo que a
+//   partida nao comece pelo desafio onde a anterior terminou.
+//   iniciarDesafioAtual() desenha a tela e prepara o desafio, e
+//   executarDesafioAtual() chama o passo do desafio da vez.
+
+// [SORTEIO] desafio em que a partida anterior terminou sem vitoria
+// (explosao ou reinicio no meio). 255 = nenhum.
+byte desafioUltimaPartida = 255;
+
+// [SORTEIO] numero de 0 a n-1 com a mesma chance para cada valor
+byte sortearIndice(byte n) {
+
+  gerar_numero_aleatorio();   // avanca o gerador
+
+  return semente_aleatoria % n;
+}
 
 // Embaralha a ordem dos desafios (nao existe ordem certa entre eles)
+// [SORTEIO] cada partida comeca da ordem base, em vez de embaralhar a ordem
+// da partida anterior, e o primeiro desafio nunca e aquele em que a
+// partida anterior terminou.
 void sortearOrdem() {
 
-  semente_aleatoria ^= ler_tempo_ms();
+  semente_aleatoria ^= ler_tempo_ms() ^ ((uint32_t)TCNT1 << 16);
+
+  for (byte i = 0; i < NUM_DESAFIOS; i++) {
+    ordemDesafios[i] = i;
+  }
 
   for (byte i = NUM_DESAFIOS - 1; i > 0; i--) {
 
-    byte j = gerar_numero_aleatorio() % (i + 1);
+    byte j = sortearIndice(i + 1);
     byte troca = ordemDesafios[i];
 
     ordemDesafios[i] = ordemDesafios[j];
     ordemDesafios[j] = troca;
   }
+
+  if (ordemDesafios[0] == desafioUltimaPartida) {
+
+    byte j = 1 + sortearIndice(NUM_DESAFIOS - 1);
+    byte troca = ordemDesafios[0];
+
+    ordemDesafios[0] = ordemDesafios[j];
+    ordemDesafios[j] = troca;
+  }
+
+#ifdef DESAFIO_TESTE
+  ordemDesafios[0] = DESAFIO_TESTE;   // [TESTE] so o desafio escolhido
+#endif
 }
 
 void iniciarDesafioAtual() {
@@ -1904,14 +2149,16 @@ void iniciarDesafioAtual() {
 
   uart_enviar_texto("DESAFIO ");
   uart_enviar_numero(indiceDesafio + 1);
-  uart_enviar_texto("/4: ");
+  uart_enviar_texto("/");
+  uart_enviar_numero(TOTAL_DESAFIOS);
+  uart_enviar_texto(": ");
 
   switch (ordemDesafios[indiceDesafio]) {
 
-    case DESAFIO_BINARIO:
-      uart_enviar_linha("BINARIO");
+    case DESAFIO_HEXADECIMAL:
+      uart_enviar_linha("HEXADECIMAL");
       limparLCD();
-      binario_iniciar();
+      hexadecimal_iniciar();
       break;
 
     case DESAFIO_COFRE:
@@ -1941,8 +2188,8 @@ byte executarDesafioAtual() {
 
   switch (ordemDesafios[indiceDesafio]) {
 
-    case DESAFIO_BINARIO:
-      return binario_executar();
+    case DESAFIO_HEXADECIMAL:
+      return hexadecimal_executar();
 
     case DESAFIO_COFRE:
       return cofre_executar();
@@ -2050,7 +2297,7 @@ void encerrarJogo(byte venceu) {
 }
 
 // [ALTERACAO REINICIO] devolve 1 uma unica vez quando '*' fica apertado por
-// TEMPO_REINICIO_MS. Um toque curto continua apagando os digitos no binario.
+// TEMPO_REINICIO_MS. Um toque curto continua apagando os digitos no hexadecimal.
 // Depois de reiniciar, so vale de novo quando o '*' for solto.
 #define TEMPO_REINICIO_MS 1000UL
 
@@ -2077,6 +2324,13 @@ byte asteriscoSegurado() {
 
 // Volta para a escolha da dificuldade (explosao, '*' segurado ou comando 'R')
 void reiniciarJogo() {
+
+  // [SORTEIO] guarda o desafio em que a partida parou sem vitoria
+  if (jogoIniciado && indiceDesafio < NUM_DESAFIOS) {
+    desafioUltimaPartida = ordemDesafios[indiceDesafio];
+  } else {
+    desafioUltimaPartida = 255;
+  }
 
   cli();
   cronometroAtivo = 0;
@@ -2112,6 +2366,7 @@ void setup() {
   uart_init();
 
   Wire.begin();
+  Wire.setClock(400000L);   // [OLED] 400 kHz: o OLED redesenha mais rapido
 
   iniciarTeclado();
 
@@ -2142,6 +2397,11 @@ void setup() {
 // ========================================
 // LOOP PRINCIPAL
 // ========================================
+// COMO FUNCIONA
+//   A cada volta: trata o reinicio ('R' ou * segurado), le o teclado,
+//   decide pelo estado do jogo (escolha do modo, jogando ou fim de jogo),
+//   atualiza o cronometro e chama um passo do desafio atual. Nada aqui
+//   espera: cada parte faz o que tem para fazer e devolve o controle.
 
 void loop() {
 
@@ -2217,7 +2477,7 @@ void loop() {
 
     uart_enviar_linha("DESAFIO CONCLUIDO");
 
-    // O binario e os fios ja escrevem a propria mensagem de sucesso
+    // O hexadecimal e os fios ja escrevem a propria mensagem de sucesso
     byte d = ordemDesafios[indiceDesafio];
 
     if (d == DESAFIO_COFRE || d == DESAFIO_SEQUENCIA) {
@@ -2230,7 +2490,7 @@ void loop() {
     indiceDesafio++;
     desafioIniciado = 0;
 
-    if (indiceDesafio >= NUM_DESAFIOS) {
+    if (indiceDesafio >= TOTAL_DESAFIOS) {
       encerrarJogo(1);
       return;
     }
